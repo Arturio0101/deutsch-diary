@@ -1,10 +1,22 @@
 <script setup lang="ts">
+import {
+  loadCachedDiaryEntry,
+  saveCachedDiaryEntry
+} from '~/composables/useOfflineDiary'
+
 definePageMeta({
   middleware: 'auth'
 })
 
-type LanguageLevel = 'B1' | 'B2' | 'C1'
-type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
+type LanguageLevel =
+  | 'B1'
+  | 'B2'
+  | 'C1'
+
+type CorrectionMode =
+  | 'minimal'
+  | 'natural'
+  | 'level-adjusted'
 
 interface Correction {
   original: string
@@ -40,12 +52,15 @@ const { $supabase } = useNuxtApp()
 const entry = ref<DiaryEntry | null>(null)
 const loading = ref(true)
 const errorMessage = ref('')
+const offlineMode = ref(false)
 
-const correctionLabels: Record<CorrectionMode, string> = {
-  minimal: 'Nur Fehler',
-  natural: 'Natürlicher formuliert',
-  'level-adjusted': 'An Niveau angepasst'
-}
+const correctionLabels:
+  Record<CorrectionMode, string> = {
+    minimal: 'Nur Fehler',
+    natural: 'Natürlicher formuliert',
+    'level-adjusted':
+      'An Niveau angepasst'
+  }
 
 onMounted(() => {
   loadEntry()
@@ -54,72 +69,142 @@ onMounted(() => {
 async function loadEntry() {
   loading.value = true
   errorMessage.value = ''
+  offlineMode.value = !navigator.onLine
 
   const routeId = route.params.id
-  const entryId = Array.isArray(routeId) ? routeId[0] : routeId
+
+  const entryId = Array.isArray(routeId)
+    ? routeId[0]
+    : routeId
 
   if (!entryId) {
-    errorMessage.value = 'Der Eintrag wurde nicht gefunden.'
+    errorMessage.value =
+      'Der Eintrag wurde nicht gefunden.'
+
+    loading.value = false
+    return
+  }
+
+  const {
+    data: { session }
+  } = await $supabase.auth.getSession()
+
+  if (!session) {
+    await navigateTo('/login')
+    return
+  }
+
+  const cachedEntry =
+    await loadCachedDiaryEntry<DiaryEntry>(
+      session.user.id,
+      entryId
+    )
+
+  if (cachedEntry) {
+    entry.value = cachedEntry
+    loading.value = false
+  }
+
+  if (!navigator.onLine) {
+    offlineMode.value = true
+
+    if (!cachedEntry) {
+      errorMessage.value =
+        'Dieser Eintrag wurde noch nicht für die Offline-Nutzung gespeichert. Öffne „Meine Einträge“ einmal mit Internet.'
+    }
+
     loading.value = false
     return
   }
 
   try {
-    const { data, error } = await $supabase
-      .from('diary_entries')
-      .select(`
-        id,
-        entry_date,
-        original_text,
-        corrected_text,
-        feedback_russian,
-        corrections,
-        vocabulary,
-        language_level,
-        correction_mode,
-        analysis_status,
-        created_at
-      `)
-      .eq('id', entryId)
-      .maybeSingle()
+    const { data, error } =
+      await $supabase
+        .from('diary_entries')
+        .select(`
+          id,
+          entry_date,
+          original_text,
+          corrected_text,
+          feedback_russian,
+          corrections,
+          vocabulary,
+          language_level,
+          correction_mode,
+          analysis_status,
+          created_at
+        `)
+        .eq('id', entryId)
+        .maybeSingle()
 
     if (error) {
       throw error
     }
 
     if (!data) {
-      errorMessage.value = 'Der Eintrag wurde nicht gefunden.'
+      if (!cachedEntry) {
+        errorMessage.value =
+          'Der Eintrag wurde nicht gefunden.'
+      }
+
       return
     }
 
     entry.value = data as DiaryEntry
+
+    await saveCachedDiaryEntry(
+      session.user.id,
+      entry.value
+    )
+
+    offlineMode.value = false
   } catch {
-    errorMessage.value = 'Der Eintrag konnte nicht geladen werden.'
+    offlineMode.value = true
+
+    if (!cachedEntry) {
+      errorMessage.value =
+        'Der Eintrag konnte weder online noch aus dem lokalen Speicher geladen werden.'
+    }
   } finally {
     loading.value = false
   }
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('de-DE', {
-    weekday: 'long',
-    day: '2-digit',
-    month: 'long',
-    year: 'numeric'
-  }).format(new Date(`${value}T00:00:00`))
+  return new Intl.DateTimeFormat(
+    'de-DE',
+    {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric'
+    }
+  ).format(
+    new Date(`${value}T00:00:00`)
+  )
 }
 
 function countWords(text: string) {
   const trimmedText = text.trim()
-  return trimmedText ? trimmedText.split(/\s+/).length : 0
+
+  return trimmedText
+    ? trimmedText.split(/\s+/).length
+    : 0
 }
 
-function vocabularyLabel(word: VocabularyItem) {
+function vocabularyLabel(
+  word: VocabularyItem
+) {
   const lemma = word.lemma
     .trim()
-    .replace(/^(der|die|das)\s+/i, '')
+    .replace(
+      /^(der|die|das)\s+/i,
+      ''
+    )
 
-  return word.article ? `${word.article} ${lemma}` : lemma
+  return word.article
+    ? `${word.article} ${lemma}`
+    : lemma
 }
 </script>
 

@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import {
+  deleteCachedVocabularyItem,
+  loadCachedVocabularyItems,
+  replaceCachedVocabularyItems
+} from '~/composables/useOfflineDiary'
+
 definePageMeta({
   middleware: 'auth'
 })
@@ -17,19 +23,29 @@ interface VocabularyItem {
   created_at: string
 }
 
-type SortMode = 'recent' | 'frequent' | 'alphabetical'
+type SortMode =
+  | 'recent'
+  | 'frequent'
+  | 'alphabetical'
 
 const { $supabase } = useNuxtApp()
 
-const vocabulary = ref<VocabularyItem[]>([])
+const vocabulary =
+  ref<VocabularyItem[]>([])
+
 const loading = ref(true)
 const loadError = ref('')
 const searchQuery = ref('')
 const sortMode = ref<SortMode>('recent')
 const deletingId = ref<string | null>(null)
 
+const currentUserId =
+  ref<string | null>(null)
+
 const filteredVocabulary = computed(() => {
-  const query = searchQuery.value.trim().toLocaleLowerCase('de-DE')
+  const query = searchQuery.value
+    .trim()
+    .toLocaleLowerCase('de-DE')
 
   const items = query
     ? vocabulary.value.filter((item) => {
@@ -51,85 +67,161 @@ const filteredVocabulary = computed(() => {
   if (sortMode.value === 'frequent') {
     return items.sort(
       (first, second) =>
-        second.encounter_count - first.encounter_count
+        second.encounter_count -
+        first.encounter_count
     )
   }
 
   if (sortMode.value === 'alphabetical') {
-    return items.sort((first, second) =>
-      wordLabel(first).localeCompare(
-        wordLabel(second),
-        'de',
-        { sensitivity: 'base' }
-      )
+    return items.sort(
+      (first, second) =>
+        wordLabel(first).localeCompare(
+          wordLabel(second),
+          'de',
+          {
+            sensitivity: 'base'
+          }
+        )
     )
   }
 
   return items.sort(
     (first, second) =>
-      new Date(second.last_seen_at).getTime() -
-      new Date(first.last_seen_at).getTime()
+      new Date(
+        second.last_seen_at
+      ).getTime() -
+      new Date(
+        first.last_seen_at
+      ).getTime()
   )
 })
 
 const totalEncounters = computed(() =>
   vocabulary.value.reduce(
-    (total, item) => total + item.encounter_count,
+    (total, item) =>
+      total + item.encounter_count,
     0
   )
 )
 
-function wordLabel(item: VocabularyItem) {
+function wordLabel(
+  item: VocabularyItem
+) {
   const cleanWord = item.word.replace(
     /^(der|die|das)\s+/i,
     ''
   )
 
-  return [item.article, cleanWord]
+  return [
+    item.article,
+    cleanWord
+  ]
     .filter(Boolean)
     .join(' ')
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('de-DE', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric'
-  }).format(new Date(value))
+  return new Intl.DateTimeFormat(
+    'de-DE',
+    {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    }
+  ).format(new Date(value))
 }
 
 async function loadVocabulary() {
   loading.value = true
   loadError.value = ''
 
-  const { data, error } = await $supabase
-    .from('vocabulary_items')
-    .select(`
-      id,
-      source_entry_id,
-      word,
-      article,
-      part_of_speech,
-      translation_russian,
-      example_german,
-      encounter_count,
-      review_count,
-      last_seen_at,
-      created_at
-    `)
-    .order('last_seen_at', { ascending: false })
+  const {
+    data: { session }
+  } = await $supabase.auth.getSession()
 
-  if (error) {
-    loadError.value = 'Der Wortschatz konnte nicht geladen werden.'
+  if (!session) {
+    await navigateTo('/login')
+    return
+  }
+
+  currentUserId.value =
+    session.user.id
+
+  const cachedItems =
+    await loadCachedVocabularyItems<VocabularyItem>(
+      session.user.id
+    )
+
+  if (cachedItems.length > 0) {
+    vocabulary.value = cachedItems
+    loading.value = false
+  }
+
+  if (!navigator.onLine) {
+    if (cachedItems.length === 0) {
+      loadError.value =
+        'Für die Offline-Nutzung wurde noch kein Wortschatz gespeichert. Öffne diese Seite einmal mit Internet.'
+    }
+
     loading.value = false
     return
   }
 
-  vocabulary.value = data ?? []
-  loading.value = false
+  try {
+    const { data, error } =
+      await $supabase
+        .from('vocabulary_items')
+        .select(`
+          id,
+          source_entry_id,
+          word,
+          article,
+          part_of_speech,
+          translation_russian,
+          example_german,
+          encounter_count,
+          review_count,
+          last_seen_at,
+          created_at
+        `)
+        .order(
+          'last_seen_at',
+          { ascending: false }
+        )
+
+    if (error) {
+      throw error
+    }
+
+    const remoteItems =
+      (data ?? []) as VocabularyItem[]
+
+    vocabulary.value = remoteItems
+
+    await replaceCachedVocabularyItems(
+      session.user.id,
+      remoteItems
+    )
+  } catch {
+    if (cachedItems.length === 0) {
+      loadError.value =
+        'Der Wortschatz konnte weder online noch aus dem lokalen Speicher geladen werden.'
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
-async function removeWord(item: VocabularyItem) {
+async function removeWord(
+  item: VocabularyItem
+) {
+  if (!navigator.onLine) {
+    loadError.value =
+      'Wörter können nur mit Internetverbindung entfernt werden.'
+
+    return
+  }
+
   const confirmed = window.confirm(
     `Möchtest du „${wordLabel(item)}“ wirklich aus deinem Wortschatz entfernen?`
   )
@@ -139,6 +231,7 @@ async function removeWord(item: VocabularyItem) {
   }
 
   deletingId.value = item.id
+  loadError.value = ''
 
   const { error } = await $supabase
     .from('vocabulary_items')
@@ -146,14 +239,24 @@ async function removeWord(item: VocabularyItem) {
     .eq('id', item.id)
 
   if (error) {
-    loadError.value = 'Das Wort konnte nicht entfernt werden.'
+    loadError.value =
+      'Das Wort konnte nicht entfernt werden.'
+
     deletingId.value = null
     return
   }
 
-  vocabulary.value = vocabulary.value.filter(
-    (word) => word.id !== item.id
-  )
+  vocabulary.value =
+    vocabulary.value.filter(
+      (word) => word.id !== item.id
+    )
+
+  if (currentUserId.value) {
+    await deleteCachedVocabularyItem(
+      currentUserId.value,
+      item.id
+    )
+  }
 
   deletingId.value = null
 }

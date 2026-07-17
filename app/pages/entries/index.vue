@@ -1,15 +1,46 @@
 <script setup lang="ts">
+import {
+  deleteCachedDiaryEntry,
+  loadCachedDiaryEntries,
+  replaceCachedDiaryEntries
+} from '~/composables/useOfflineDiary'
+
 definePageMeta({
   middleware: 'auth'
 })
 
-type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
-type LanguageLevel = 'B1' | 'B2' | 'C1'
+type CorrectionMode =
+  | 'minimal'
+  | 'natural'
+  | 'level-adjusted'
+
+type LanguageLevel =
+  | 'B1'
+  | 'B2'
+  | 'C1'
+
+interface Correction {
+  original: string
+  corrected: string
+  explanationRussian: string
+}
+
+interface VocabularyItem {
+  lemma: string
+  article: 'der' | 'die' | 'das' | null
+  partOfSpeech: string
+  translationRussian: string
+  exampleGerman: string
+}
 
 interface DiaryEntry {
   id: string
   entry_date: string
   original_text: string
+  corrected_text: string | null
+  feedback_russian: string | null
+  corrections: Correction[]
+  vocabulary: VocabularyItem[]
   language_level: LanguageLevel
   correction_mode: CorrectionMode
   analysis_status: string
@@ -23,11 +54,16 @@ const loading = ref(true)
 const errorMessage = ref('')
 const deletingId = ref<string | null>(null)
 
-const correctionLabels: Record<CorrectionMode, string> = {
-  minimal: 'Nur Fehler',
-  natural: 'Natürlicher',
-  'level-adjusted': 'An Niveau angepasst'
-}
+const currentUserId =
+  ref<string | null>(null)
+
+const correctionLabels:
+  Record<CorrectionMode, string> = {
+    minimal: 'Nur Fehler',
+    natural: 'Natürlicher',
+    'level-adjusted':
+      'An Niveau angepasst'
+  }
 
 onMounted(() => {
   loadEntries()
@@ -37,36 +73,103 @@ async function loadEntries() {
   loading.value = true
   errorMessage.value = ''
 
+  const {
+    data: { session }
+  } = await $supabase.auth.getSession()
+
+  if (!session) {
+    await navigateTo('/login')
+    return
+  }
+
+  currentUserId.value = session.user.id
+
+  const cachedEntries =
+    await loadCachedDiaryEntries<DiaryEntry>(
+      session.user.id
+    )
+
+  if (cachedEntries.length > 0) {
+    entries.value = cachedEntries.sort(
+      (first, second) =>
+        new Date(
+          second.created_at
+        ).getTime() -
+        new Date(
+          first.created_at
+        ).getTime()
+    )
+
+    loading.value = false
+  }
+
+  if (!navigator.onLine) {
+    if (cachedEntries.length === 0) {
+      errorMessage.value =
+        'Für die Offline-Nutzung wurden noch keine Einträge gespeichert. Öffne diese Seite einmal mit Internet.'
+    }
+
+    loading.value = false
+    return
+  }
+
   try {
-    const { data, error } = await $supabase
-      .from('diary_entries')
-      .select(`
-        id,
-        entry_date,
-        original_text,
-        language_level,
-        correction_mode,
-        analysis_status,
-        created_at
-      `)
-      .order('created_at', { ascending: false })
+    const { data, error } =
+      await $supabase
+        .from('diary_entries')
+        .select(`
+          id,
+          entry_date,
+          original_text,
+          corrected_text,
+          feedback_russian,
+          corrections,
+          vocabulary,
+          language_level,
+          correction_mode,
+          analysis_status,
+          created_at
+        `)
+        .order(
+          'created_at',
+          { ascending: false }
+        )
 
     if (error) {
       throw error
     }
 
-    entries.value = (data ?? []) as DiaryEntry[]
+    const remoteEntries =
+      (data ?? []) as DiaryEntry[]
+
+    entries.value = remoteEntries
+
+    await replaceCachedDiaryEntries(
+      session.user.id,
+      remoteEntries
+    )
   } catch (error) {
-    errorMessage.value =
-      error instanceof Error
-        ? error.message
-        : 'Die Einträge konnten nicht geladen werden.'
+    if (cachedEntries.length === 0) {
+      errorMessage.value =
+        error instanceof Error
+          ? error.message
+          : 'Die Einträge konnten nicht geladen werden.'
+    }
   } finally {
     loading.value = false
   }
 }
 
-async function deleteEntry(entry: DiaryEntry) {
+async function deleteEntry(
+  entry: DiaryEntry
+) {
+  if (!navigator.onLine) {
+    errorMessage.value =
+      'Einträge können nur mit Internetverbindung gelöscht werden.'
+
+    return
+  }
+
   const confirmed = window.confirm(
     'Möchtest du diesen Tagebucheintrag wirklich löschen?'
   )
@@ -84,25 +187,40 @@ async function deleteEntry(entry: DiaryEntry) {
     .eq('id', entry.id)
 
   if (error) {
-    errorMessage.value = 'Der Eintrag konnte nicht gelöscht werden.'
+    errorMessage.value =
+      'Der Eintrag konnte nicht gelöscht werden.'
+
     deletingId.value = null
     return
   }
 
   entries.value = entries.value.filter(
-    (savedEntry) => savedEntry.id !== entry.id
+    (savedEntry) =>
+      savedEntry.id !== entry.id
   )
+
+  if (currentUserId.value) {
+    await deleteCachedDiaryEntry(
+      currentUserId.value,
+      entry.id
+    )
+  }
 
   deletingId.value = null
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('de-DE', {
-    weekday: 'long',
-    day: '2-digit',
-    month: 'long',
-    year: 'numeric'
-  }).format(new Date(`${value}T00:00:00`))
+  return new Intl.DateTimeFormat(
+    'de-DE',
+    {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric'
+    }
+  ).format(
+    new Date(`${value}T00:00:00`)
+  )
 }
 
 function countWords(text: string) {
