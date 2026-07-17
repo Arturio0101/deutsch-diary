@@ -14,5 +14,8 @@
     "nuxt": "4.4.8",
     "openai": "^6.48.0",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@vite-pwa/nuxt": "^1.1.1"
   }
 }
