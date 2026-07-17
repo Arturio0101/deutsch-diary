@@ -1,7 +1,16 @@
 export default defineNuxtConfig({
   compatibilityDate: '2026-07-17',
   devtools: { enabled: true },
+
   css: ['~/assets/css/main.css'],
+
+  runtimeConfig: {
+    public: {
+      supabaseUrl: '',
+      supabasePublishableKey: ''
+    }
+  },
+
   app: {
     head: {
       htmlAttrs: { lang: 'de' },
@@ -11,7 +20,10 @@ export default defineNuxtConfig({
           name: 'description',
           content: 'Persönliches Tagebuch zum Schreiben und Deutschlernen.'
         },
-        { name: 'theme-color', content: '#f7f4ed' }
+        {
+          name: 'theme-color',
+          content: '#f7f4ed'
+        }
       ]
     }
   }
