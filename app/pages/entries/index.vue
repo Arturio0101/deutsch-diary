@@ -21,6 +21,7 @@ const { $supabase } = useNuxtApp()
 const entries = ref<DiaryEntry[]>([])
 const loading = ref(true)
 const errorMessage = ref('')
+const deletingId = ref<string | null>(null)
 
 const correctionLabels: Record<CorrectionMode, string> = {
   minimal: 'Nur Fehler',
@@ -65,6 +66,36 @@ async function loadEntries() {
   }
 }
 
+async function deleteEntry(entry: DiaryEntry) {
+  const confirmed = window.confirm(
+    'Möchtest du diesen Tagebucheintrag wirklich löschen?'
+  )
+
+  if (!confirmed) {
+    return
+  }
+
+  deletingId.value = entry.id
+  errorMessage.value = ''
+
+  const { error } = await $supabase
+    .from('diary_entries')
+    .delete()
+    .eq('id', entry.id)
+
+  if (error) {
+    errorMessage.value = 'Der Eintrag konnte nicht gelöscht werden.'
+    deletingId.value = null
+    return
+  }
+
+  entries.value = entries.value.filter(
+    (savedEntry) => savedEntry.id !== entry.id
+  )
+
+  deletingId.value = null
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('de-DE', {
     weekday: 'long',
@@ -76,7 +107,26 @@ function formatDate(value: string) {
 
 function countWords(text: string) {
   const trimmedText = text.trim()
-  return trimmedText ? trimmedText.split(/\s+/).length : 0
+
+  return trimmedText
+    ? trimmedText.split(/\s+/).length
+    : 0
+}
+
+function analysisLabel(status: string) {
+  if (status === 'completed') {
+    return 'Analysiert'
+  }
+
+  if (status === 'processing') {
+    return 'Wird analysiert'
+  }
+
+  if (status === 'failed') {
+    return 'Analyse fehlgeschlagen'
+  }
+
+  return 'Noch nicht analysiert'
 }
 </script>
 
@@ -92,30 +142,64 @@ function countWords(text: string) {
         </span>
       </NuxtLink>
 
-      <NuxtLink class="new-entry-link" to="/">
-        Neuer Eintrag
-      </NuxtLink>
+      <nav
+        class="history-actions"
+        aria-label="Hauptnavigation"
+      >
+        <NuxtLink
+          class="vocabulary-link"
+          to="/vocabulary"
+        >
+          Mein Wortschatz
+        </NuxtLink>
+
+        <NuxtLink
+          class="new-entry-link"
+          to="/"
+        >
+          Neuer Eintrag
+        </NuxtLink>
+      </nav>
     </header>
 
     <main class="history-content">
       <section class="history-intro">
-        <p class="eyebrow">Dein Lernarchiv</p>
+        <p class="eyebrow">
+          Dein Lernarchiv
+        </p>
+
         <h1>Meine Einträge</h1>
+
         <p>
           Hier findest du deine bisherigen Texte, Zielniveaus und
           Korrektureinstellungen.
         </p>
       </section>
 
-      <div v-if="loading" class="history-state" aria-live="polite">
-        <span class="loading-dot" aria-hidden="true" />
+      <div
+        v-if="loading"
+        class="history-state"
+        aria-live="polite"
+      >
+        <span
+          class="loading-dot"
+          aria-hidden="true"
+        />
+
         Einträge werden geladen …
       </div>
 
-      <div v-else-if="errorMessage" class="history-state error">
+      <div
+        v-else-if="errorMessage"
+        class="history-state error"
+        role="alert"
+      >
         <p>{{ errorMessage }}</p>
 
-        <button type="button" @click="loadEntries">
+        <button
+          type="button"
+          @click="loadEntries"
+        >
           Erneut versuchen
         </button>
       </div>
@@ -125,13 +209,11 @@ function countWords(text: string) {
         class="entry-list"
         aria-label="Gespeicherte Tagebucheinträge"
       >
-        <NuxtLink
-  v-for="entry in entries"
-  :key="entry.id"
-  class="entry-link"
-  :to="`/entries/${entry.id}`"
->
-  <article class="entry-card">
+        <article
+          v-for="entry in entries"
+          :key="entry.id"
+          class="entry-card"
+        >
           <header class="entry-header">
             <div>
               <p class="entry-date">
@@ -159,27 +241,39 @@ function countWords(text: string) {
           </p>
 
           <footer class="entry-footer">
-  <span>
-    {{
-      entry.analysis_status === 'completed'
-        ? 'Analysiert'
-        : entry.analysis_status === 'processing'
-          ? 'Wird analysiert'
-          : entry.analysis_status === 'failed'
-            ? 'Analyse fehlgeschlagen'
-            : 'Noch nicht analysiert'
-    }}
-  </span>
+            <span>
+              {{ analysisLabel(entry.analysis_status) }}
+            </span>
 
-  <strong>Details ansehen →</strong>
-</footer>
+            <div class="entry-actions">
+              <NuxtLink :to="`/entries/${entry.id}`">
+                Details ansehen →
+              </NuxtLink>
+
+              <button
+                type="button"
+                :disabled="deletingId === entry.id"
+                @click="deleteEntry(entry)"
+              >
+                {{
+                  deletingId === entry.id
+                    ? 'Wird gelöscht …'
+                    : 'Löschen'
+                }}
+              </button>
+            </div>
+          </footer>
         </article>
-	</NuxtLink>
       </section>
 
-      <section v-else class="empty-state">
+      <section
+        v-else
+        class="empty-state"
+      >
         <span class="empty-mark">D</span>
+
         <h2>Noch keine Einträge</h2>
+
         <p>
           Schreibe deinen ersten Text und beginne dein persönliches
           Deutsch-Archiv.
@@ -194,30 +288,6 @@ function countWords(text: string) {
 </template>
 
 <style scoped>
-.entry-link {
-  display: block;
-  border-radius: 18px;
-  outline: none;
-}
-
-.entry-link .entry-card {
-  transition:
-    transform 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-
-.entry-link:hover .entry-card,
-.entry-link:focus-visible .entry-card {
-  transform: translateY(-2px);
-  border-color: var(--forest);
-  box-shadow: 0 18px 48px rgba(32, 45, 39, 0.12);
-}
-
-.entry-footer strong {
-  color: var(--forest);
-  font-size: 12px;
-}
 .history-shell {
   min-height: 100vh;
 }
@@ -269,17 +339,39 @@ function countWords(text: string) {
   font-size: 11px;
 }
 
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vocabulary-link,
 .new-entry-link,
 .empty-state a {
   display: inline-flex;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
   padding: 0 18px;
   border-radius: 11px;
+  font-weight: 800;
+}
+
+.vocabulary-link {
+  border: 1px solid var(--line);
+  color: var(--forest-dark);
+  background: var(--surface);
+}
+
+.vocabulary-link:hover {
+  border-color: var(--forest);
+  background: var(--sage);
+}
+
+.new-entry-link,
+.empty-state a {
   color: white;
   background: var(--forest);
-  font-weight: 800;
 }
 
 .new-entry-link:hover,
@@ -326,6 +418,10 @@ function countWords(text: string) {
   background: #fff8f7;
 }
 
+.history-state.error p {
+  margin-bottom: 16px;
+}
+
 .history-state.error button {
   padding: 10px 16px;
   border: 0;
@@ -333,6 +429,7 @@ function countWords(text: string) {
   color: white;
   background: var(--forest);
   font-weight: 700;
+  cursor: pointer;
 }
 
 .loading-dot {
@@ -355,6 +452,16 @@ function countWords(text: string) {
   border-radius: 18px;
   background: rgba(255, 253, 248, 0.96);
   box-shadow: 0 14px 40px rgba(32, 45, 39, 0.06);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.entry-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(30, 103, 77, 0.55);
+  box-shadow: 0 18px 48px rgba(32, 45, 39, 0.1);
 }
 
 .entry-header,
@@ -419,10 +526,50 @@ function countWords(text: string) {
 }
 
 .entry-footer {
+  min-height: 58px;
+  gap: 20px;
   padding: 13px 22px;
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 12px;
+}
+
+.entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.entry-actions a,
+.entry-actions button {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.entry-actions a {
+  color: var(--forest);
+}
+
+.entry-actions a:hover {
+  text-decoration: underline;
+}
+
+.entry-actions button {
+  padding: 0;
+  border: 0;
+  color: #9b4a45;
+  background: transparent;
+  cursor: pointer;
+}
+
+.entry-actions button:hover {
+  color: #6f2020;
+  text-decoration: underline;
+}
+
+.entry-actions button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .empty-mark {
@@ -444,28 +591,57 @@ function countWords(text: string) {
   line-height: 1.6;
 }
 
-@media (max-width: 640px) {
-  .history-topbar,
-  .entry-header {
+@media (max-width: 700px) {
+  .history-topbar {
     align-items: flex-start;
   }
 
+  .history-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .vocabulary-link,
+  .new-entry-link {
+    min-height: 40px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 640px) {
   .history-brand small {
     display: none;
   }
 
-  .new-entry-link {
-    min-height: 40px;
-    padding: 0 13px;
-    font-size: 13px;
-  }
-
   .entry-header {
+    align-items: flex-start;
     flex-direction: column;
   }
 
   .entry-badges {
     justify-content: flex-start;
+  }
+
+  .entry-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 440px) {
+  .history-topbar,
+  .history-content {
+    width: min(100% - 24px, 860px);
+  }
+
+  .history-brand strong {
+    font-size: 16px;
+  }
+
+  .entry-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 </style>
