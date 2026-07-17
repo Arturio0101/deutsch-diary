@@ -35,6 +35,10 @@ interface AnalyzeResponse {
   analysis: AnalysisResult
 }
 
+interface TranscriptionResponse {
+  text: string
+}
+
 const { $supabase } = useNuxtApp()
 
 const profileLabel = ref('DU')
@@ -46,7 +50,9 @@ const levels: LanguageLevel[] = [
   'C1'
 ]
 
-const selectedLevel = ref<LanguageLevel>('B1')
+const selectedLevel =
+  ref<LanguageLevel>('B1')
+
 const correctionMode =
   ref<CorrectionMode>('minimal')
 
@@ -60,6 +66,19 @@ const analysisResult =
   ref<AnalysisResult | null>(null)
 
 const draftReady = ref(false)
+
+const recording = ref(false)
+const transcribing = ref(false)
+const microphoneError = ref('')
+
+let mediaRecorder: MediaRecorder | null = null
+let mediaStream: MediaStream | null = null
+let audioChunks: Blob[] = []
+let discardRecording = false
+
+let recordingTimer:
+  | ReturnType<typeof setTimeout>
+  | undefined
 
 let draftSaveTimer:
   | ReturnType<typeof setTimeout>
@@ -181,9 +200,278 @@ onBeforeUnmount(() => {
   if (draftSaveTimer) {
     clearTimeout(draftSaveTimer)
   }
+
+  if (recordingTimer) {
+    clearTimeout(recordingTimer)
+  }
+
+  discardRecording = true
+
+  if (
+    mediaRecorder &&
+    mediaRecorder.state !== 'inactive'
+  ) {
+    mediaRecorder.stop()
+  }
+
+  releaseMicrophone()
 })
 
+function releaseMicrophone() {
+  mediaStream?.getTracks().forEach(
+    (track) => track.stop()
+  )
+
+  mediaStream = null
+}
+
+function getSupportedAudioType() {
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4'
+  ]
+
+  return types.find((type) =>
+    MediaRecorder.isTypeSupported(type)
+  )
+}
+
+async function transcribeAudio(audio: Blob) {
+  if (!navigator.onLine) {
+    microphoneError.value =
+      'Die Spracherkennung benötigt eine Internetverbindung.'
+    return
+  }
+
+  if (!audio.size) {
+    microphoneError.value =
+      'Die Aufnahme ist leer. Bitte versuche es erneut.'
+    return
+  }
+
+  transcribing.value = true
+  microphoneError.value = ''
+  saveMessage.value = ''
+  saveError.value = ''
+
+  try {
+    const {
+      data: { session }
+    } = await $supabase.auth.getSession()
+
+    if (!session) {
+      await navigateTo('/login')
+      return
+    }
+
+    const extension =
+      audio.type.includes('mp4')
+        ? 'm4a'
+        : audio.type.includes('wav')
+          ? 'wav'
+          : 'webm'
+
+    const formData = new FormData()
+
+    formData.append(
+      'audio',
+      audio,
+      `diary-recording.${extension}`
+    )
+
+    const response =
+      await $fetch<TranscriptionResponse>(
+        '/api/transcribe',
+        {
+          method: 'POST',
+
+          headers: {
+            Authorization:
+              `Bearer ${session.access_token}`
+          },
+
+          body: formData
+        }
+      )
+
+    const transcription =
+      response.text.trim()
+
+    if (!transcription) {
+      throw new Error(
+        'The transcription is empty'
+      )
+    }
+
+    diaryText.value = [
+      diaryText.value.trim(),
+      transcription
+    ]
+      .filter(Boolean)
+      .join(' ')
+  } catch (error) {
+    console.error(
+      'Audio transcription failed:',
+      error
+    )
+
+    microphoneError.value =
+      'Die Aufnahme konnte nicht erkannt werden. Bitte versuche es erneut.'
+  } finally {
+    transcribing.value = false
+  }
+}
+
+async function startRecording() {
+  microphoneError.value = ''
+  saveMessage.value = ''
+  saveError.value = ''
+
+  if (!navigator.onLine) {
+    microphoneError.value =
+      'Die Spracherkennung benötigt eine Internetverbindung.'
+    return
+  }
+
+  if (
+    !navigator.mediaDevices ||
+    !navigator.mediaDevices.getUserMedia ||
+    typeof MediaRecorder === 'undefined'
+  ) {
+    microphoneError.value =
+      'Dein Browser unterstützt keine Sprachaufnahme.'
+    return
+  }
+
+  try {
+    mediaStream =
+      await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      })
+
+    const supportedType =
+      getSupportedAudioType()
+
+    mediaRecorder = supportedType
+      ? new MediaRecorder(mediaStream, {
+          mimeType: supportedType
+        })
+      : new MediaRecorder(mediaStream)
+
+    audioChunks = []
+    discardRecording = false
+
+    mediaRecorder.addEventListener(
+      'dataavailable',
+      (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data)
+        }
+      }
+    )
+
+    mediaRecorder.addEventListener(
+      'stop',
+      () => {
+        const audioType =
+          mediaRecorder?.mimeType ||
+          supportedType ||
+          'audio/webm'
+
+        const audio = new Blob(
+          audioChunks,
+          {
+            type: audioType
+          }
+        )
+
+        audioChunks = []
+        mediaRecorder = null
+        releaseMicrophone()
+
+        if (!discardRecording) {
+          void transcribeAudio(audio)
+        }
+
+        discardRecording = false
+      },
+      {
+        once: true
+      }
+    )
+
+    mediaRecorder.addEventListener(
+      'error',
+      () => {
+        microphoneError.value =
+          'Bei der Aufnahme ist ein Fehler aufgetreten.'
+
+        recording.value = false
+        mediaRecorder = null
+        releaseMicrophone()
+      },
+      {
+        once: true
+      }
+    )
+
+    mediaRecorder.start(1000)
+    recording.value = true
+
+    recordingTimer = setTimeout(
+      stopRecording,
+      5 * 60 * 1000
+    )
+  } catch (error) {
+    console.error(
+      'Microphone access failed:',
+      error
+    )
+
+    microphoneError.value =
+      'Der Zugriff auf das Mikrofon wurde nicht erlaubt.'
+
+    mediaRecorder = null
+    releaseMicrophone()
+  }
+}
+
+function stopRecording() {
+  if (recordingTimer) {
+    clearTimeout(recordingTimer)
+    recordingTimer = undefined
+  }
+
+  if (
+    mediaRecorder &&
+    mediaRecorder.state !== 'inactive'
+  ) {
+    mediaRecorder.stop()
+  }
+
+  recording.value = false
+}
+
+async function toggleRecording() {
+  if (recording.value) {
+    stopRecording()
+    return
+  }
+
+  await startRecording()
+}
+
 async function signOut() {
+  if (recording.value) {
+    discardRecording = true
+    stopRecording()
+  }
+
   await $supabase.auth.signOut()
   await navigateTo('/login')
 }
@@ -224,13 +512,19 @@ async function saveEntry() {
   const originalText =
     diaryText.value.trim()
 
-  if (!originalText || saving.value) {
+  if (
+    !originalText ||
+    saving.value ||
+    recording.value ||
+    transcribing.value
+  ) {
     return
   }
 
   saving.value = true
   saveMessage.value = ''
   saveError.value = ''
+  microphoneError.value = ''
   analysisResult.value = null
 
   let entryId: string | null = null
@@ -383,7 +677,9 @@ async function saveEntry() {
 
         <span>
           <strong>Deutsch Diary</strong>
-          <small>Schreiben. Verstehen. Wachsen.</small>
+          <small>
+            Schreiben. Verstehen. Wachsen.
+          </small>
         </span>
       </NuxtLink>
 
@@ -443,8 +739,8 @@ async function saveEntry() {
           </div>
 
           <span class="draft-label">
-  		{{ draftStatusLabel }}
-	</span>
+            {{ draftStatusLabel }}
+          </span>
         </div>
 
         <div class="settings-grid">
@@ -460,8 +756,12 @@ async function saveEntry() {
                 v-for="level in levels"
                 :key="level"
                 type="button"
-                :class="{ active: selectedLevel === level }"
-                :aria-pressed="selectedLevel === level"
+                :class="{
+                  active: selectedLevel === level
+                }"
+                :aria-pressed="
+                  selectedLevel === level
+                "
                 @click="selectedLevel = level"
               >
                 {{ level }}
@@ -498,9 +798,37 @@ async function saveEntry() {
             rows="12"
             maxlength="6000"
             placeholder="Heute habe ich ..."
-            @input="saveMessage = ''; saveError = ''"
+            @input="
+              saveMessage = '';
+              saveError = '';
+              microphoneError = ''
+            "
           />
         </label>
+
+        <p
+          v-if="
+            recording ||
+            transcribing ||
+            microphoneError
+          "
+          class="microphone-status"
+          :class="{
+            error: microphoneError,
+            active: recording
+          }"
+          role="status"
+          aria-live="polite"
+        >
+          {{
+            microphoneError ||
+            (
+              recording
+                ? 'Aufnahme läuft … Sprich auf Deutsch und klicke danach auf „Aufnahme stoppen“.'
+                : 'Deine Aufnahme wird in Text umgewandelt …'
+            )
+          }}
+        </p>
 
         <p
           v-if="saveMessage || saveError"
@@ -520,18 +848,36 @@ async function saveEntry() {
 
           <div class="actions">
             <button
-              class="secondary-button"
+              class="secondary-button microphone-button"
+              :class="{ recording }"
               type="button"
-              disabled
+              :disabled="transcribing || saving"
+              :aria-pressed="recording"
+              @click="toggleRecording"
             >
-              Mikrofon
-              <span class="soon-badge">bald</span>
+              <span
+                class="microphone-dot"
+                aria-hidden="true"
+              />
+
+              {{
+                recording
+                  ? 'Aufnahme stoppen'
+                  : transcribing
+                    ? 'Wird erkannt …'
+                    : 'Mikrofon'
+              }}
             </button>
 
             <button
               class="primary-button"
               type="button"
-              :disabled="!diaryText.trim() || saving"
+              :disabled="
+                !diaryText.trim() ||
+                saving ||
+                recording ||
+                transcribing
+              "
               @click="saveEntry"
             >
               {{
@@ -565,14 +911,18 @@ async function saveEntry() {
 
         <div class="feedback-box">
           <h3>Краткий комментарий</h3>
-          <p>{{ analysisResult.feedbackRussian }}</p>
+          <p>
+            {{ analysisResult.feedbackRussian }}
+          </p>
         </div>
 
         <div class="analysis-section">
           <h3>Исправления</h3>
 
           <p
-            v-if="!analysisResult.corrections.length"
+            v-if="
+              !analysisResult.corrections.length
+            "
             class="empty-analysis"
           >
             Ошибок не найдено.
@@ -583,13 +933,22 @@ async function saveEntry() {
             class="correction-list"
           >
             <li
-              v-for="(correction, index) in analysisResult.corrections"
-              :key="`${correction.original}-${index}`"
+              v-for="(
+                correction,
+                index
+              ) in analysisResult.corrections"
+              :key="
+                `${correction.original}-${index}`
+              "
             >
               <p>
-                <del>{{ correction.original }}</del>
+                <del>
+                  {{ correction.original }}
+                </del>
 
-                <span aria-hidden="true">→</span>
+                <span aria-hidden="true">
+                  →
+                </span>
 
                 <strong>
                   {{ correction.corrected }}
@@ -597,7 +956,9 @@ async function saveEntry() {
               </p>
 
               <small>
-                {{ correction.explanationRussian }}
+                {{
+                  correction.explanationRussian
+                }}
               </small>
             </li>
           </ul>
@@ -607,7 +968,9 @@ async function saveEntry() {
           <h3>Новые слова</h3>
 
           <p
-            v-if="!analysisResult.vocabulary.length"
+            v-if="
+              !analysisResult.vocabulary.length
+            "
             class="empty-analysis"
           >
             Для этой записи новые слова не выбраны.
@@ -618,7 +981,10 @@ async function saveEntry() {
             class="vocabulary-grid"
           >
             <article
-              v-for="(word, index) in analysisResult.vocabulary"
+              v-for="(
+                word,
+                index
+              ) in analysisResult.vocabulary"
               :key="`${word.lemma}-${index}`"
               class="vocabulary-card"
             >
@@ -678,8 +1044,8 @@ async function saveEntry() {
             <h3>Original behalten</h3>
 
             <p>
-              Dein eigener Text bleibt immer unverändert
-              gespeichert.
+              Dein eigener Text bleibt immer
+              unverändert gespeichert.
             </p>
           </article>
 
@@ -689,8 +1055,8 @@ async function saveEntry() {
             <h3>Fehler verstehen</h3>
 
             <p>
-              Kurze Erklärungen zeigen dir genau, was sich
-              geändert hat.
+              Kurze Erklärungen zeigen dir genau,
+              was sich geändert hat.
             </p>
           </article>
 
@@ -700,8 +1066,8 @@ async function saveEntry() {
             <h3>Wörter wiederholen</h3>
 
             <p>
-              Wichtige Begriffe landen mit deinem Beispiel
-              im Wörterbuch.
+              Wichtige Begriffe landen mit deinem
+              Beispiel im Wörterbuch.
             </p>
           </article>
         </div>
@@ -737,6 +1103,54 @@ async function saveEntry() {
   background: var(--sage);
 }
 
+.microphone-button {
+  gap: 8px;
+}
+
+.microphone-button.recording {
+  border-color: #a33b35;
+  color: #8a2e2e;
+  background: #f8e1df;
+}
+
+.microphone-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.microphone-button.recording .microphone-dot {
+  background: #c8463e;
+  box-shadow:
+    0 0 0 5px
+    rgba(200, 70, 62, 0.14);
+  animation:
+    microphone-pulse 1.2s infinite;
+}
+
+.microphone-status {
+  margin: 0;
+  padding: 13px 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  background: #fffaf0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.microphone-status.active {
+  color: #8a2e2e;
+  background: #f8e1df;
+}
+
+.microphone-status.error {
+  color: #8a2e2e;
+  background: #f8e1df;
+  font-weight: 700;
+}
+
 .save-feedback {
   margin: 0;
   padding: 14px 24px;
@@ -758,7 +1172,9 @@ async function saveEntry() {
   border: 1px solid var(--line);
   border-radius: 22px;
   background: var(--surface);
-  box-shadow: 0 20px 60px rgba(32, 45, 39, 0.08);
+  box-shadow:
+    0 20px 60px
+    rgba(32, 45, 39, 0.08);
 }
 
 .analysis-heading h2 {
@@ -770,7 +1186,8 @@ async function saveEntry() {
   margin-bottom: 24px;
   padding: 22px;
   border-radius: 14px;
-  background: rgba(219, 232, 223, 0.35);
+  background:
+    rgba(219, 232, 223, 0.35);
   font-family: Georgia, serif;
   font-size: 20px;
   line-height: 1.7;
@@ -842,7 +1259,8 @@ async function saveEntry() {
 
 .vocabulary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns:
+    repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -896,6 +1314,13 @@ async function saveEntry() {
   background: var(--forest-dark);
 }
 
+@keyframes microphone-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
 @media (max-width: 760px) {
   .topbar-actions {
     flex-wrap: wrap;
@@ -921,6 +1346,10 @@ async function saveEntry() {
     min-height: 38px;
     padding: 0 9px;
     font-size: 11px;
+  }
+
+  .microphone-status {
+    padding: 12px 16px;
   }
 }
 </style>
