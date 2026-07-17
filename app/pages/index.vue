@@ -3,29 +3,20 @@ definePageMeta({
   middleware: 'auth'
 })
 
-const { $supabase } = useNuxtApp()
-const profileLabel = ref('DU')
-
-async function signOut() {
-  await $supabase.auth.signOut()
-  await navigateTo('/login')
-}
-
-onMounted(async () => {
-  const { data } = await $supabase.auth.getSession()
-  const email = data.session?.user.email
-
-  if (email) {
-    profileLabel.value = email.slice(0, 2).toUpperCase()
-  }
-})
 type LanguageLevel = 'B1' | 'B2' | 'C1'
 type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
 
+const { $supabase } = useNuxtApp()
+
+const profileLabel = ref('DU')
 const levels: LanguageLevel[] = ['B1', 'B2', 'C1']
 const selectedLevel = ref<LanguageLevel>('B1')
 const correctionMode = ref<CorrectionMode>('minimal')
 const diaryText = ref('')
+
+const saving = ref(false)
+const saveMessage = ref('')
+const saveError = ref('')
 
 const formattedDate = new Intl.DateTimeFormat('de-DE', {
   weekday: 'long',
@@ -38,6 +29,65 @@ const wordCount = computed(() => {
   const text = diaryText.value.trim()
   return text ? text.split(/\s+/).length : 0
 })
+
+onMounted(async () => {
+  const { data } = await $supabase.auth.getSession()
+  const email = data.session?.user.email
+
+  if (email) {
+    profileLabel.value = email.slice(0, 2).toUpperCase()
+  }
+})
+
+async function signOut() {
+  await $supabase.auth.signOut()
+  await navigateTo('/login')
+}
+
+async function saveEntry() {
+  const originalText = diaryText.value.trim()
+
+  if (!originalText || saving.value) {
+    return
+  }
+
+  saving.value = true
+  saveMessage.value = ''
+  saveError.value = ''
+
+  const now = new Date()
+  const localDate = new Date(
+    now.getTime() - now.getTimezoneOffset() * 60_000
+  )
+    .toISOString()
+    .slice(0, 10)
+
+  try {
+    const { error } = await $supabase
+      .from('diary_entries')
+      .insert({
+        entry_date: localDate,
+        original_text: originalText,
+        language_level: selectedLevel.value,
+        correction_mode: correctionMode.value,
+        analysis_status: 'draft'
+      })
+
+    if (error) {
+      throw error
+    }
+
+    diaryText.value = ''
+    saveMessage.value = 'Dein Eintrag wurde sicher gespeichert.'
+  } catch (error) {
+    saveError.value =
+      error instanceof Error
+        ? error.message
+        : 'Der Eintrag konnte nicht gespeichert werden.'
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <template>
@@ -52,14 +102,14 @@ const wordCount = computed(() => {
       </NuxtLink>
 
       <button
-  class="profile-button"
-  type="button"
-  aria-label="Abmelden"
-  title="Abmelden"
-  @click="signOut"
->
-  <span>{{ profileLabel }}</span>
-</button>
+        class="profile-button"
+        type="button"
+        aria-label="Abmelden"
+        title="Abmelden"
+        @click="signOut"
+      >
+        <span>{{ profileLabel }}</span>
+      </button>
     </header>
 
     <main class="page-content">
@@ -78,13 +128,18 @@ const wordCount = computed(() => {
             <span class="status-dot" aria-hidden="true" />
             <span class="date-label">{{ formattedDate }}</span>
           </div>
-          <span class="draft-label">Entwurf wird lokal gespeichert</span>
+          <span class="draft-label">Privat und nur für dich sichtbar</span>
         </div>
 
         <div class="settings-grid">
           <fieldset class="setting-group">
             <legend>Zielniveau</legend>
-            <div class="level-switch" role="group" aria-label="Zielniveau wählen">
+
+            <div
+              class="level-switch"
+              role="group"
+              aria-label="Zielniveau wählen"
+            >
               <button
                 v-for="level in levels"
                 :key="level"
@@ -100,6 +155,7 @@ const wordCount = computed(() => {
 
           <label class="setting-group">
             <span>Korrektur</span>
+
             <select v-model="correctionMode">
               <option value="minimal">Nur Fehler korrigieren</option>
               <option value="natural">Natürlicher formulieren</option>
@@ -110,13 +166,25 @@ const wordCount = computed(() => {
 
         <label class="writing-area">
           <span class="sr-only">Tagebucheintrag</span>
+
           <textarea
             v-model="diaryText"
             rows="12"
             maxlength="6000"
             placeholder="Heute habe ich ..."
+            @input="saveMessage = ''; saveError = ''"
           />
         </label>
+
+        <p
+          v-if="saveMessage || saveError"
+          class="save-feedback"
+          :class="{ error: saveError }"
+          role="status"
+          aria-live="polite"
+        >
+          {{ saveError || saveMessage }}
+        </p>
 
         <div class="editor-footer">
           <div class="writing-meta">
@@ -129,8 +197,14 @@ const wordCount = computed(() => {
               Mikrofon
               <span class="soon-badge">bald</span>
             </button>
-            <button class="primary-button" type="button" :disabled="!diaryText.trim()">
-              Speichern & analysieren
+
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="!diaryText.trim() || saving"
+              @click="saveEntry"
+            >
+              {{ saving ? 'Wird gespeichert …' : 'Eintrag speichern' }}
             </button>
           </div>
         </div>
@@ -141,17 +215,20 @@ const wordCount = computed(() => {
           <p class="eyebrow">So lernst du</p>
           <h2 id="learning-title">Aus deinem Tag wird dein Deutsch</h2>
         </div>
+
         <div class="steps">
           <article>
             <span>01</span>
             <h3>Original behalten</h3>
             <p>Dein eigener Text bleibt immer unverändert gespeichert.</p>
           </article>
+
           <article>
             <span>02</span>
             <h3>Fehler verstehen</h3>
             <p>Kurze Erklärungen zeigen dir genau, was sich geändert hat.</p>
           </article>
+
           <article>
             <span>03</span>
             <h3>Wörter wiederholen</h3>
@@ -162,3 +239,20 @@ const wordCount = computed(() => {
     </main>
   </div>
 </template>
+
+<style scoped>
+.save-feedback {
+  margin: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  color: var(--forest-dark);
+  background: var(--sage);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.save-feedback.error {
+  color: #8a2e2e;
+  background: #f8e1df;
+}
+</style>
