@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
-    "nuxt": "4.4.8"
+    "nuxt": "4.4.8",
+    "openai": "^6.48.0",
+    "zod": "^4.4.3"
   }
 }

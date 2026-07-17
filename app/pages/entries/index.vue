@@ -125,11 +125,13 @@ function countWords(text: string) {
         class="entry-list"
         aria-label="Gespeicherte Tagebucheinträge"
       >
-        <article
-          v-for="entry in entries"
-          :key="entry.id"
-          class="entry-card"
-        >
+        <NuxtLink
+  v-for="entry in entries"
+  :key="entry.id"
+  class="entry-link"
+  :to="`/entries/${entry.id}`"
+>
+  <article class="entry-card">
           <header class="entry-header">
             <div>
               <p class="entry-date">
@@ -157,15 +159,22 @@ function countWords(text: string) {
           </p>
 
           <footer class="entry-footer">
-            <span>
-              {{
-                entry.analysis_status === 'draft'
-                  ? 'Noch nicht analysiert'
-                  : entry.analysis_status
-              }}
-            </span>
-          </footer>
+  <span>
+    {{
+      entry.analysis_status === 'completed'
+        ? 'Analysiert'
+        : entry.analysis_status === 'processing'
+          ? 'Wird analysiert'
+          : entry.analysis_status === 'failed'
+            ? 'Analyse fehlgeschlagen'
+            : 'Noch nicht analysiert'
+    }}
+  </span>
+
+  <strong>Details ansehen →</strong>
+</footer>
         </article>
+	</NuxtLink>
       </section>
 
       <section v-else class="empty-state">
@@ -185,6 +194,30 @@ function countWords(text: string) {
 </template>
 
 <style scoped>
+.entry-link {
+  display: block;
+  border-radius: 18px;
+  outline: none;
+}
+
+.entry-link .entry-card {
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.entry-link:hover .entry-card,
+.entry-link:focus-visible .entry-card {
+  transform: translateY(-2px);
+  border-color: var(--forest);
+  box-shadow: 0 18px 48px rgba(32, 45, 39, 0.12);
+}
+
+.entry-footer strong {
+  color: var(--forest);
+  font-size: 12px;
+}
 .history-shell {
   min-height: 100vh;
 }

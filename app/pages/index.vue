@@ -6,10 +6,36 @@ definePageMeta({
 type LanguageLevel = 'B1' | 'B2' | 'C1'
 type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
 
+interface Correction {
+  original: string
+  corrected: string
+  explanationRussian: string
+}
+
+interface VocabularyItem {
+  lemma: string
+  article: 'der' | 'die' | 'das' | null
+  partOfSpeech: string
+  translationRussian: string
+  exampleGerman: string
+}
+
+interface AnalysisResult {
+  correctedText: string
+  feedbackRussian: string
+  corrections: Correction[]
+  vocabulary: VocabularyItem[]
+}
+
+interface AnalyzeResponse {
+  analysis: AnalysisResult
+}
+
 const { $supabase } = useNuxtApp()
 
 const profileLabel = ref('DU')
 const levels: LanguageLevel[] = ['B1', 'B2', 'C1']
+
 const selectedLevel = ref<LanguageLevel>('B1')
 const correctionMode = ref<CorrectionMode>('minimal')
 const diaryText = ref('')
@@ -17,6 +43,7 @@ const diaryText = ref('')
 const saving = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
+const analysisResult = ref<AnalysisResult | null>(null)
 
 const formattedDate = new Intl.DateTimeFormat('de-DE', {
   weekday: 'long',
@@ -54,6 +81,9 @@ async function saveEntry() {
   saving.value = true
   saveMessage.value = ''
   saveError.value = ''
+  analysisResult.value = null
+
+  let entryId: string | null = null
 
   const now = new Date()
   const localDate = new Date(
@@ -63,27 +93,81 @@ async function saveEntry() {
     .slice(0, 10)
 
   try {
-    const { error } = await $supabase
+    const {
+      data: { session }
+    } = await $supabase.auth.getSession()
+
+    if (!session) {
+      await navigateTo('/login')
+      return
+    }
+
+    const { data: entry, error: insertError } = await $supabase
       .from('diary_entries')
       .insert({
         entry_date: localDate,
         original_text: originalText,
         language_level: selectedLevel.value,
         correction_mode: correctionMode.value,
-        analysis_status: 'draft'
+        analysis_status: 'processing'
       })
+      .select('id')
+      .single()
 
-    if (error) {
-      throw error
+    if (insertError) {
+      throw insertError
     }
 
+    entryId = entry.id
+
+    const response = await $fetch<AnalyzeResponse>('/api/analyze', {
+      method: 'POST',
+
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      },
+
+      body: {
+        text: originalText,
+        level: selectedLevel.value,
+        correctionMode: correctionMode.value
+      }
+    })
+
+    const analysis = response.analysis
+
+    const { error: updateError } = await $supabase
+      .from('diary_entries')
+      .update({
+        corrected_text: analysis.correctedText,
+        feedback_russian: analysis.feedbackRussian,
+        corrections: analysis.corrections,
+        vocabulary: analysis.vocabulary,
+        analysis_status: 'completed'
+      })
+      .eq('id', entryId)
+
+    if (updateError) {
+      throw updateError
+    }
+
+    analysisResult.value = analysis
     diaryText.value = ''
-    saveMessage.value = 'Dein Eintrag wurde sicher gespeichert.'
-  } catch (error) {
-    saveError.value =
-      error instanceof Error
-        ? error.message
-        : 'Der Eintrag konnte nicht gespeichert werden.'
+    saveMessage.value = 'Dein Eintrag wurde gespeichert und analysiert.'
+  } catch {
+    if (entryId) {
+      await $supabase
+        .from('diary_entries')
+        .update({
+          analysis_status: 'failed'
+        })
+        .eq('id', entryId)
+
+      saveError.value =
+        'Dein Originaltext wurde gespeichert, aber die Analyse ist fehlgeschlagen.'
+    } else {
+      saveError.value = 'Der Eintrag konnte nicht gespeichert werden.'
+    }
   } finally {
     saving.value = false
   }
@@ -93,8 +177,13 @@ async function saveEntry() {
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <NuxtLink class="brand" to="/" aria-label="Deutsch Diary Startseite">
+      <NuxtLink
+        class="brand"
+        to="/"
+        aria-label="Deutsch Diary Startseite"
+      >
         <span class="brand-mark">D</span>
+
         <span>
           <strong>Deutsch Diary</strong>
           <small>Schreiben. Verstehen. Wachsen.</small>
@@ -102,26 +191,28 @@ async function saveEntry() {
       </NuxtLink>
 
       <div class="topbar-actions">
-  <NuxtLink class="history-link" to="/entries">
-    Meine Einträge
-  </NuxtLink>
+        <NuxtLink class="history-link" to="/entries">
+          Meine Einträge
+        </NuxtLink>
 
-  <button
-    class="profile-button"
-    type="button"
-    aria-label="Abmelden"
-    title="Abmelden"
-    @click="signOut"
-  >
-    <span>{{ profileLabel }}</span>
-  </button>
-</div>
+        <button
+          class="profile-button"
+          type="button"
+          aria-label="Abmelden"
+          title="Abmelden"
+          @click="signOut"
+        >
+          <span>{{ profileLabel }}</span>
+        </button>
+      </div>
     </header>
 
     <main class="page-content">
       <section class="intro">
         <p class="eyebrow">Dein persönlicher Lernmoment</p>
+
         <h1>Was ist heute passiert?</h1>
+
         <p>
           Schreibe frei auf Deutsch. Wir verbessern nur so viel, wie du möchtest,
           und verwandeln deinen Alltag in persönlichen Wortschatz.
@@ -134,7 +225,10 @@ async function saveEntry() {
             <span class="status-dot" aria-hidden="true" />
             <span class="date-label">{{ formattedDate }}</span>
           </div>
-          <span class="draft-label">Privat und nur für dich sichtbar</span>
+
+          <span class="draft-label">
+            Privat und nur für dich sichtbar
+          </span>
         </div>
 
         <div class="settings-grid">
@@ -163,9 +257,17 @@ async function saveEntry() {
             <span>Korrektur</span>
 
             <select v-model="correctionMode">
-              <option value="minimal">Nur Fehler korrigieren</option>
-              <option value="natural">Natürlicher formulieren</option>
-              <option value="level-adjusted">An Niveau anpassen</option>
+              <option value="minimal">
+                Nur Fehler korrigieren
+              </option>
+
+              <option value="natural">
+                Natürlicher formulieren
+              </option>
+
+              <option value="level-adjusted">
+                An Niveau anpassen
+              </option>
             </select>
           </label>
         </div>
@@ -199,7 +301,11 @@ async function saveEntry() {
           </div>
 
           <div class="actions">
-            <button class="secondary-button" type="button" disabled>
+            <button
+              class="secondary-button"
+              type="button"
+              disabled
+            >
               Mikrofon
               <span class="soon-badge">bald</span>
             </button>
@@ -210,35 +316,131 @@ async function saveEntry() {
               :disabled="!diaryText.trim() || saving"
               @click="saveEntry"
             >
-              {{ saving ? 'Wird gespeichert …' : 'Eintrag speichern' }}
+              {{ saving ? 'Wird analysiert …' : 'Speichern & analysieren' }}
             </button>
           </div>
         </div>
       </section>
 
-      <section class="learning-preview" aria-labelledby="learning-title">
+      <section
+        v-if="analysisResult"
+        class="analysis-result"
+        aria-labelledby="analysis-title"
+      >
+        <div class="analysis-heading">
+          <p class="eyebrow">Deine Auswertung</p>
+          <h2 id="analysis-title">Korrigierter Text</h2>
+        </div>
+
+        <p class="corrected-text">
+          {{ analysisResult.correctedText }}
+        </p>
+
+        <div class="feedback-box">
+          <h3>Краткий комментарий</h3>
+          <p>{{ analysisResult.feedbackRussian }}</p>
+        </div>
+
+        <div class="analysis-section">
+          <h3>Исправления</h3>
+
+          <p
+            v-if="!analysisResult.corrections.length"
+            class="empty-analysis"
+          >
+            Ошибок не найдено.
+          </p>
+
+          <ul v-else class="correction-list">
+            <li
+              v-for="(correction, index) in analysisResult.corrections"
+              :key="`${correction.original}-${index}`"
+            >
+              <p>
+                <del>{{ correction.original }}</del>
+                <span aria-hidden="true">→</span>
+                <strong>{{ correction.corrected }}</strong>
+              </p>
+
+              <small>
+                {{ correction.explanationRussian }}
+              </small>
+            </li>
+          </ul>
+        </div>
+
+        <div class="analysis-section">
+          <h3>Новые слова</h3>
+
+          <p
+            v-if="!analysisResult.vocabulary.length"
+            class="empty-analysis"
+          >
+            Для этой записи новые слова не выбраны.
+          </p>
+
+          <div v-else class="vocabulary-grid">
+            <article
+              v-for="(word, index) in analysisResult.vocabulary"
+              :key="`${word.lemma}-${index}`"
+              class="vocabulary-card"
+            >
+              <p class="vocabulary-word">
+                <span v-if="word.article">
+                  {{ word.article }}
+                </span>
+
+                {{ word.lemma }}
+              </p>
+
+              <p class="vocabulary-type">
+                {{ word.partOfSpeech }}
+              </p>
+
+              <p class="vocabulary-translation">
+                {{ word.translationRussian }}
+              </p>
+
+              <small>{{ word.exampleGerman }}</small>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="learning-preview"
+        aria-labelledby="learning-title"
+      >
         <div>
           <p class="eyebrow">So lernst du</p>
-          <h2 id="learning-title">Aus deinem Tag wird dein Deutsch</h2>
+          <h2 id="learning-title">
+            Aus deinem Tag wird dein Deutsch
+          </h2>
         </div>
 
         <div class="steps">
           <article>
             <span>01</span>
             <h3>Original behalten</h3>
-            <p>Dein eigener Text bleibt immer unverändert gespeichert.</p>
+            <p>
+              Dein eigener Text bleibt immer unverändert gespeichert.
+            </p>
           </article>
 
           <article>
             <span>02</span>
             <h3>Fehler verstehen</h3>
-            <p>Kurze Erklärungen zeigen dir genau, was sich geändert hat.</p>
+            <p>
+              Kurze Erklärungen zeigen dir genau, was sich geändert hat.
+            </p>
           </article>
 
           <article>
             <span>03</span>
             <h3>Wörter wiederholen</h3>
-            <p>Wichtige Begriffe landen mit deinem Beispiel im Wörterbuch.</p>
+            <p>
+              Wichtige Begriffe landen mit deinem Beispiel im Wörterbuch.
+            </p>
           </article>
         </div>
       </section>
@@ -247,20 +449,6 @@ async function saveEntry() {
 </template>
 
 <style scoped>
-.save-feedback {
-  margin: 0;
-  padding: 14px 24px;
-  border-top: 1px solid var(--line);
-  color: var(--forest-dark);
-  background: var(--sage);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.save-feedback.error {
-  color: #8a2e2e;
-  background: #f8e1df;
-}
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -284,6 +472,150 @@ async function saveEntry() {
 .history-link:hover {
   border-color: var(--forest);
   background: var(--sage);
+}
+
+.save-feedback {
+  margin: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  color: var(--forest-dark);
+  background: var(--sage);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.save-feedback.error {
+  color: #8a2e2e;
+  background: #f8e1df;
+}
+
+.analysis-result {
+  margin-top: 26px;
+  padding: 30px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 20px 60px rgba(32, 45, 39, 0.08);
+}
+
+.analysis-heading h2 {
+  margin-bottom: 22px;
+  font-size: clamp(34px, 5vw, 48px);
+}
+
+.corrected-text {
+  margin-bottom: 24px;
+  padding: 22px;
+  border-radius: 14px;
+  background: rgba(219, 232, 223, 0.35);
+  font-family: Georgia, serif;
+  font-size: 20px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.feedback-box {
+  margin-bottom: 28px;
+  padding: 18px 20px;
+  border-left: 4px solid var(--gold);
+  background: #fffaf0;
+}
+
+.feedback-box h3,
+.analysis-section h3 {
+  margin-bottom: 10px;
+}
+
+.feedback-box p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.analysis-section + .analysis-section {
+  margin-top: 28px;
+}
+
+.empty-analysis {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.correction-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.correction-list li {
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.correction-list p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+
+.correction-list del {
+  color: #9b4a45;
+}
+
+.correction-list strong {
+  color: var(--forest);
+}
+
+.correction-list small,
+.vocabulary-card small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.vocabulary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.vocabulary-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.vocabulary-word {
+  margin-bottom: 4px;
+  color: var(--forest-dark);
+  font-weight: 800;
+}
+
+.vocabulary-type {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.vocabulary-translation {
+  margin-bottom: 9px;
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .analysis-result {
+    padding: 22px;
+  }
+
+  .vocabulary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 540px) {

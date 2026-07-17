@@ -1,10 +1,17 @@
 export default defineNuxtConfig({
   compatibilityDate: '2026-07-17',
-  devtools: { enabled: true },
+
+  devtools: {
+    enabled: true
+  },
 
   css: ['~/assets/css/main.css'],
 
   runtimeConfig: {
+    // Доступен только серверной части Nuxt.
+    openaiApiKey: '',
+
+    // Эти параметры доступны браузеру.
     public: {
       supabaseUrl: '',
       supabasePublishableKey: ''
@@ -13,8 +20,12 @@ export default defineNuxtConfig({
 
   app: {
     head: {
-      htmlAttrs: { lang: 'de' },
+      htmlAttrs: {
+        lang: 'de'
+      },
+
       title: 'Deutsch Diary',
+
       meta: [
         {
           name: 'description',
