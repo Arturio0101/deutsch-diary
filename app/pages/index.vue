@@ -54,7 +54,10 @@ const formattedDate = new Intl.DateTimeFormat('de-DE', {
 
 const wordCount = computed(() => {
   const text = diaryText.value.trim()
-  return text ? text.split(/\s+/).length : 0
+
+  return text
+    ? text.split(/\s+/).length
+    : 0
 })
 
 onMounted(async () => {
@@ -69,6 +72,32 @@ onMounted(async () => {
 async function signOut() {
   await $supabase.auth.signOut()
   await navigateTo('/login')
+}
+
+async function saveVocabularyItems(
+  entryId: string,
+  vocabulary: VocabularyItem[]
+) {
+  const results = await Promise.all(
+    vocabulary.map((item) =>
+      $supabase.rpc('save_vocabulary_item', {
+        p_source_entry_id: entryId,
+        p_word: item.lemma,
+        p_article: item.article,
+        p_part_of_speech: item.partOfSpeech,
+        p_translation_russian: item.translationRussian,
+        p_example_german: item.exampleGerman
+      })
+    )
+  )
+
+  const failedResult = results.find(
+    (result) => result.error
+  )
+
+  if (failedResult?.error) {
+    throw failedResult.error
+  }
 }
 
 async function saveEntry() {
@@ -86,6 +115,7 @@ async function saveEntry() {
   let entryId: string | null = null
 
   const now = new Date()
+
   const localDate = new Date(
     now.getTime() - now.getTimezoneOffset() * 60_000
   )
@@ -120,19 +150,22 @@ async function saveEntry() {
 
     entryId = entry.id
 
-    const response = await $fetch<AnalyzeResponse>('/api/analyze', {
-      method: 'POST',
+    const response = await $fetch<AnalyzeResponse>(
+      '/api/analyze',
+      {
+        method: 'POST',
 
-      headers: {
-        Authorization: `Bearer ${session.access_token}`
-      },
+        headers: {
+          Authorization: `Bearer ${session.access_token}`
+        },
 
-      body: {
-        text: originalText,
-        level: selectedLevel.value,
-        correctionMode: correctionMode.value
+        body: {
+          text: originalText,
+          level: selectedLevel.value,
+          correctionMode: correctionMode.value
+        }
       }
-    })
+    )
 
     const analysis = response.analysis
 
@@ -151,9 +184,30 @@ async function saveEntry() {
       throw updateError
     }
 
+    let vocabularySaved = true
+
+    if (analysis.vocabulary.length > 0) {
+      try {
+        await saveVocabularyItems(
+          entryId,
+          analysis.vocabulary
+        )
+      } catch (error) {
+        vocabularySaved = false
+
+        console.error(
+          'Vocabulary could not be saved:',
+          error
+        )
+      }
+    }
+
     analysisResult.value = analysis
     diaryText.value = ''
-    saveMessage.value = 'Dein Eintrag wurde gespeichert und analysiert.'
+
+    saveMessage.value = vocabularySaved
+      ? 'Dein Eintrag wurde gespeichert, analysiert und zum Wortschatz hinzugefügt.'
+      : 'Dein Eintrag wurde analysiert, aber der Wortschatz konnte nicht aktualisiert werden.'
   } catch {
     if (entryId) {
       await $supabase
@@ -166,7 +220,8 @@ async function saveEntry() {
       saveError.value =
         'Dein Originaltext wurde gespeichert, aber die Analyse ist fehlgeschlagen.'
     } else {
-      saveError.value = 'Der Eintrag konnte nicht gespeichert werden.'
+      saveError.value =
+        'Der Eintrag konnte nicht gespeichert werden.'
     }
   } finally {
     saving.value = false
@@ -191,7 +246,17 @@ async function saveEntry() {
       </NuxtLink>
 
       <div class="topbar-actions">
-        <NuxtLink class="history-link" to="/entries">
+        <NuxtLink
+          class="history-link"
+          to="/vocabulary"
+        >
+          Mein Wortschatz
+        </NuxtLink>
+
+        <NuxtLink
+          class="history-link"
+          to="/entries"
+        >
           Meine Einträge
         </NuxtLink>
 
@@ -209,21 +274,30 @@ async function saveEntry() {
 
     <main class="page-content">
       <section class="intro">
-        <p class="eyebrow">Dein persönlicher Lernmoment</p>
+        <p class="eyebrow">
+          Dein persönlicher Lernmoment
+        </p>
 
         <h1>Was ist heute passiert?</h1>
 
         <p>
-          Schreibe frei auf Deutsch. Wir verbessern nur so viel, wie du möchtest,
-          und verwandeln deinen Alltag in persönlichen Wortschatz.
+          Schreibe frei auf Deutsch. Wir verbessern nur so viel,
+          wie du möchtest, und verwandeln deinen Alltag in
+          persönlichen Wortschatz.
         </p>
       </section>
 
       <section class="editor-card">
         <div class="editor-heading">
           <div>
-            <span class="status-dot" aria-hidden="true" />
-            <span class="date-label">{{ formattedDate }}</span>
+            <span
+              class="status-dot"
+              aria-hidden="true"
+            />
+
+            <span class="date-label">
+              {{ formattedDate }}
+            </span>
           </div>
 
           <span class="draft-label">
@@ -273,7 +347,9 @@ async function saveEntry() {
         </div>
 
         <label class="writing-area">
-          <span class="sr-only">Tagebucheintrag</span>
+          <span class="sr-only">
+            Tagebucheintrag
+          </span>
 
           <textarea
             v-model="diaryText"
@@ -316,7 +392,11 @@ async function saveEntry() {
               :disabled="!diaryText.trim() || saving"
               @click="saveEntry"
             >
-              {{ saving ? 'Wird analysiert …' : 'Speichern & analysieren' }}
+              {{
+                saving
+                  ? 'Wird analysiert …'
+                  : 'Speichern & analysieren'
+              }}
             </button>
           </div>
         </div>
@@ -328,8 +408,13 @@ async function saveEntry() {
         aria-labelledby="analysis-title"
       >
         <div class="analysis-heading">
-          <p class="eyebrow">Deine Auswertung</p>
-          <h2 id="analysis-title">Korrigierter Text</h2>
+          <p class="eyebrow">
+            Deine Auswertung
+          </p>
+
+          <h2 id="analysis-title">
+            Korrigierter Text
+          </h2>
         </div>
 
         <p class="corrected-text">
@@ -351,15 +436,22 @@ async function saveEntry() {
             Ошибок не найдено.
           </p>
 
-          <ul v-else class="correction-list">
+          <ul
+            v-else
+            class="correction-list"
+          >
             <li
               v-for="(correction, index) in analysisResult.corrections"
               :key="`${correction.original}-${index}`"
             >
               <p>
                 <del>{{ correction.original }}</del>
+
                 <span aria-hidden="true">→</span>
-                <strong>{{ correction.corrected }}</strong>
+
+                <strong>
+                  {{ correction.corrected }}
+                </strong>
               </p>
 
               <small>
@@ -379,7 +471,10 @@ async function saveEntry() {
             Для этой записи новые слова не выбраны.
           </p>
 
-          <div v-else class="vocabulary-grid">
+          <div
+            v-else
+            class="vocabulary-grid"
+          >
             <article
               v-for="(word, index) in analysisResult.vocabulary"
               :key="`${word.lemma}-${index}`"
@@ -390,7 +485,12 @@ async function saveEntry() {
                   {{ word.article }}
                 </span>
 
-                {{ word.lemma }}
+                {{
+                  word.lemma.replace(
+                    /^(der|die|das)\s+/i,
+                    ''
+                  )
+                }}
               </p>
 
               <p class="vocabulary-type">
@@ -401,9 +501,17 @@ async function saveEntry() {
                 {{ word.translationRussian }}
               </p>
 
-              <small>{{ word.exampleGerman }}</small>
+              <small>
+                {{ word.exampleGerman }}
+              </small>
             </article>
           </div>
+        </div>
+
+        <div class="analysis-navigation">
+          <NuxtLink to="/vocabulary">
+            Zum Wortschatz →
+          </NuxtLink>
         </div>
       </section>
 
@@ -412,7 +520,10 @@ async function saveEntry() {
         aria-labelledby="learning-title"
       >
         <div>
-          <p class="eyebrow">So lernst du</p>
+          <p class="eyebrow">
+            So lernst du
+          </p>
+
           <h2 id="learning-title">
             Aus deinem Tag wird dein Deutsch
           </h2>
@@ -421,25 +532,34 @@ async function saveEntry() {
         <div class="steps">
           <article>
             <span>01</span>
+
             <h3>Original behalten</h3>
+
             <p>
-              Dein eigener Text bleibt immer unverändert gespeichert.
+              Dein eigener Text bleibt immer unverändert
+              gespeichert.
             </p>
           </article>
 
           <article>
             <span>02</span>
+
             <h3>Fehler verstehen</h3>
+
             <p>
-              Kurze Erklärungen zeigen dir genau, was sich geändert hat.
+              Kurze Erklärungen zeigen dir genau, was sich
+              geändert hat.
             </p>
           </article>
 
           <article>
             <span>03</span>
+
             <h3>Wörter wiederholen</h3>
+
             <p>
-              Wichtige Begriffe landen mit deinem Beispiel im Wörterbuch.
+              Wichtige Begriffe landen mit deinem Beispiel
+              im Wörterbuch.
             </p>
           </article>
         </div>
@@ -452,14 +572,15 @@ async function saveEntry() {
 .topbar-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 
 .history-link {
   display: inline-flex;
+  min-height: 42px;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
   padding: 0 15px;
   border: 1px solid var(--line);
   border-radius: 11px;
@@ -608,6 +729,37 @@ async function saveEntry() {
   color: var(--muted);
 }
 
+.analysis-navigation {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.analysis-navigation a {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border-radius: 11px;
+  color: white;
+  background: var(--forest);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.analysis-navigation a:hover {
+  background: var(--forest-dark);
+}
+
+@media (max-width: 760px) {
+  .topbar-actions {
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 640px) {
   .analysis-result {
     padding: 22px;
@@ -619,10 +771,14 @@ async function saveEntry() {
 }
 
 @media (max-width: 540px) {
+  .topbar-actions {
+    gap: 6px;
+  }
+
   .history-link {
-    min-height: 40px;
-    padding: 0 11px;
-    font-size: 12px;
+    min-height: 38px;
+    padding: 0 9px;
+    font-size: 11px;
   }
 }
 </style>
