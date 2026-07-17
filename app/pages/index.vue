@@ -4,7 +4,11 @@ definePageMeta({
 })
 
 type LanguageLevel = 'B1' | 'B2' | 'C1'
-type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
+
+type CorrectionMode =
+  | 'minimal'
+  | 'natural'
+  | 'level-adjusted'
 
 interface Correction {
   original: string
@@ -34,23 +38,40 @@ interface AnalyzeResponse {
 const { $supabase } = useNuxtApp()
 
 const profileLabel = ref('DU')
-const levels: LanguageLevel[] = ['B1', 'B2', 'C1']
+const currentUserId = ref<string | null>(null)
+
+const levels: LanguageLevel[] = [
+  'B1',
+  'B2',
+  'C1'
+]
 
 const selectedLevel = ref<LanguageLevel>('B1')
-const correctionMode = ref<CorrectionMode>('minimal')
+const correctionMode =
+  ref<CorrectionMode>('minimal')
+
 const diaryText = ref('')
 
 const saving = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
-const analysisResult = ref<AnalysisResult | null>(null)
 
-const formattedDate = new Intl.DateTimeFormat('de-DE', {
-  weekday: 'long',
-  day: '2-digit',
-  month: 'long',
-  year: 'numeric'
-}).format(new Date())
+const analysisResult =
+  ref<AnalysisResult | null>(null)
+
+const draftReady = ref(false)
+
+let draftSaveTimer:
+  | ReturnType<typeof setTimeout>
+  | undefined
+
+const formattedDate =
+  new Intl.DateTimeFormat('de-DE', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric'
+  }).format(new Date())
 
 const wordCount = computed(() => {
   const text = diaryText.value.trim()
@@ -60,12 +81,105 @@ const wordCount = computed(() => {
     : 0
 })
 
+const draftStatusLabel = computed(() => {
+  if (!draftReady.value) {
+    return 'Lokaler Entwurf wird geladen …'
+  }
+
+  if (diaryText.value.trim()) {
+    return 'Entwurf wird lokal gespeichert'
+  }
+
+  return 'Privat und nur für dich sichtbar'
+})
+
+watch(
+  [
+    diaryText,
+    selectedLevel,
+    correctionMode
+  ],
+  () => {
+    if (
+      !import.meta.client ||
+      !draftReady.value ||
+      !currentUserId.value
+    ) {
+      return
+    }
+
+    if (draftSaveTimer) {
+      clearTimeout(draftSaveTimer)
+    }
+
+    draftSaveTimer = setTimeout(async () => {
+      if (!currentUserId.value) {
+        return
+      }
+
+      try {
+        await saveOfflineDraft({
+          userId: currentUserId.value,
+          text: diaryText.value,
+          languageLevel: selectedLevel.value,
+          correctionMode: correctionMode.value
+        })
+      } catch (error) {
+        console.error(
+          'Der lokale Entwurf konnte nicht gespeichert werden:',
+          error
+        )
+      }
+    }, 500)
+  }
+)
+
 onMounted(async () => {
-  const { data } = await $supabase.auth.getSession()
-  const email = data.session?.user.email
+  const { data } =
+    await $supabase.auth.getSession()
+
+  const session = data.session
+  const email = session?.user.email
 
   if (email) {
-    profileLabel.value = email.slice(0, 2).toUpperCase()
+    profileLabel.value =
+      email.slice(0, 2).toUpperCase()
+  }
+
+  if (!session) {
+    draftReady.value = true
+    return
+  }
+
+  currentUserId.value = session.user.id
+
+  try {
+    const draft = await loadOfflineDraft(
+      session.user.id
+    )
+
+    if (draft) {
+      diaryText.value = draft.text
+
+      selectedLevel.value =
+        draft.languageLevel
+
+      correctionMode.value =
+        draft.correctionMode
+    }
+  } catch (error) {
+    console.error(
+      'Der lokale Entwurf konnte nicht geladen werden:',
+      error
+    )
+  } finally {
+    draftReady.value = true
+  }
+})
+
+onBeforeUnmount(() => {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer)
   }
 })
 
@@ -80,14 +194,20 @@ async function saveVocabularyItems(
 ) {
   const results = await Promise.all(
     vocabulary.map((item) =>
-      $supabase.rpc('save_vocabulary_item', {
-        p_source_entry_id: entryId,
-        p_word: item.lemma,
-        p_article: item.article,
-        p_part_of_speech: item.partOfSpeech,
-        p_translation_russian: item.translationRussian,
-        p_example_german: item.exampleGerman
-      })
+      $supabase.rpc(
+        'save_vocabulary_item',
+        {
+          p_source_entry_id: entryId,
+          p_word: item.lemma,
+          p_article: item.article,
+          p_part_of_speech:
+            item.partOfSpeech,
+          p_translation_russian:
+            item.translationRussian,
+          p_example_german:
+            item.exampleGerman
+        }
+      )
     )
   )
 
@@ -101,7 +221,8 @@ async function saveVocabularyItems(
 }
 
 async function saveEntry() {
-  const originalText = diaryText.value.trim()
+  const originalText =
+    diaryText.value.trim()
 
   if (!originalText || saving.value) {
     return
@@ -117,7 +238,8 @@ async function saveEntry() {
   const now = new Date()
 
   const localDate = new Date(
-    now.getTime() - now.getTimezoneOffset() * 60_000
+    now.getTime() -
+      now.getTimezoneOffset() * 60_000
   )
     .toISOString()
     .slice(0, 10)
@@ -132,13 +254,18 @@ async function saveEntry() {
       return
     }
 
-    const { data: entry, error: insertError } = await $supabase
+    const {
+      data: entry,
+      error: insertError
+    } = await $supabase
       .from('diary_entries')
       .insert({
         entry_date: localDate,
         original_text: originalText,
-        language_level: selectedLevel.value,
-        correction_mode: correctionMode.value,
+        language_level:
+          selectedLevel.value,
+        correction_mode:
+          correctionMode.value,
         analysis_status: 'processing'
       })
       .select('id')
@@ -150,35 +277,43 @@ async function saveEntry() {
 
     entryId = entry.id
 
-    const response = await $fetch<AnalyzeResponse>(
-      '/api/analyze',
-      {
-        method: 'POST',
+    const response =
+      await $fetch<AnalyzeResponse>(
+        '/api/analyze',
+        {
+          method: 'POST',
 
-        headers: {
-          Authorization: `Bearer ${session.access_token}`
-        },
+          headers: {
+            Authorization:
+              `Bearer ${session.access_token}`
+          },
 
-        body: {
-          text: originalText,
-          level: selectedLevel.value,
-          correctionMode: correctionMode.value
+          body: {
+            text: originalText,
+            level: selectedLevel.value,
+            correctionMode:
+              correctionMode.value
+          }
         }
-      }
-    )
+      )
 
     const analysis = response.analysis
 
-    const { error: updateError } = await $supabase
-      .from('diary_entries')
-      .update({
-        corrected_text: analysis.correctedText,
-        feedback_russian: analysis.feedbackRussian,
-        corrections: analysis.corrections,
-        vocabulary: analysis.vocabulary,
-        analysis_status: 'completed'
-      })
-      .eq('id', entryId)
+    const { error: updateError } =
+      await $supabase
+        .from('diary_entries')
+        .update({
+          corrected_text:
+            analysis.correctedText,
+          feedback_russian:
+            analysis.feedbackRussian,
+          corrections:
+            analysis.corrections,
+          vocabulary:
+            analysis.vocabulary,
+          analysis_status: 'completed'
+        })
+        .eq('id', entryId)
 
     if (updateError) {
       throw updateError
@@ -205,9 +340,16 @@ async function saveEntry() {
     analysisResult.value = analysis
     diaryText.value = ''
 
-    saveMessage.value = vocabularySaved
-      ? 'Dein Eintrag wurde gespeichert, analysiert und zum Wortschatz hinzugefügt.'
-      : 'Dein Eintrag wurde analysiert, aber der Wortschatz konnte nicht aktualisiert werden.'
+    if (currentUserId.value) {
+      await deleteOfflineDraft(
+        currentUserId.value
+      )
+    }
+
+    saveMessage.value =
+      vocabularySaved
+        ? 'Dein Eintrag wurde gespeichert, analysiert und zum Wortschatz hinzugefügt.'
+        : 'Dein Eintrag wurde analysiert, aber der Wortschatz konnte nicht aktualisiert werden.'
   } catch {
     if (entryId) {
       await $supabase
@@ -221,7 +363,7 @@ async function saveEntry() {
         'Dein Originaltext wurde gespeichert, aber die Analyse ist fehlgeschlagen.'
     } else {
       saveError.value =
-        'Der Eintrag konnte nicht gespeichert werden.'
+        'Der Eintrag konnte nicht gespeichert werden. Dein Entwurf bleibt lokal erhalten.'
     }
   } finally {
     saving.value = false
@@ -301,8 +443,8 @@ async function saveEntry() {
           </div>
 
           <span class="draft-label">
-            Privat und nur für dich sichtbar
-          </span>
+  		{{ draftStatusLabel }}
+	</span>
         </div>
 
         <div class="settings-grid">
