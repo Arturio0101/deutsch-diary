@@ -101,15 +101,21 @@ async function saveEntry() {
         </span>
       </NuxtLink>
 
-      <button
-        class="profile-button"
-        type="button"
-        aria-label="Abmelden"
-        title="Abmelden"
-        @click="signOut"
-      >
-        <span>{{ profileLabel }}</span>
-      </button>
+      <div class="topbar-actions">
+  <NuxtLink class="history-link" to="/entries">
+    Meine Einträge
+  </NuxtLink>
+
+  <button
+    class="profile-button"
+    type="button"
+    aria-label="Abmelden"
+    title="Abmelden"
+    @click="signOut"
+  >
+    <span>{{ profileLabel }}</span>
+  </button>
+</div>
     </header>
 
     <main class="page-content">
@@ -254,5 +260,37 @@ async function saveEntry() {
 .save-feedback.error {
   color: #8a2e2e;
   background: #f8e1df;
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--forest-dark);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.history-link:hover {
+  border-color: var(--forest);
+  background: var(--sage);
+}
+
+@media (max-width: 540px) {
+  .history-link {
+    min-height: 40px;
+    padding: 0 11px;
+    font-size: 12px;
+  }
 }
 </style>
