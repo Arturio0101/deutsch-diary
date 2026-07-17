@@ -1,4 +1,24 @@
 <script setup lang="ts">
+definePageMeta({
+  middleware: 'auth'
+})
+
+const { $supabase } = useNuxtApp()
+const profileLabel = ref('DU')
+
+async function signOut() {
+  await $supabase.auth.signOut()
+  await navigateTo('/login')
+}
+
+onMounted(async () => {
+  const { data } = await $supabase.auth.getSession()
+  const email = data.session?.user.email
+
+  if (email) {
+    profileLabel.value = email.slice(0, 2).toUpperCase()
+  }
+})
 type LanguageLevel = 'B1' | 'B2' | 'C1'
 type CorrectionMode = 'minimal' | 'natural' | 'level-adjusted'
 
@@ -31,9 +51,15 @@ const wordCount = computed(() => {
         </span>
       </NuxtLink>
 
-      <button class="profile-button" type="button" aria-label="Profil öffnen">
-        <span>AR</span>
-      </button>
+      <button
+  class="profile-button"
+  type="button"
+  aria-label="Abmelden"
+  title="Abmelden"
+  @click="signOut"
+>
+  <span>{{ profileLabel }}</span>
+</button>
     </header>
 
     <main class="page-content">
